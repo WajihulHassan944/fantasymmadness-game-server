@@ -857,6 +857,83 @@ app.get('/api/globalLeaderBoard', async (req, res) => {
 
 
 
+/* FANTASY MMADNESS fighter affiliate system */
+const fighterAffiliateSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'Gameuser2', default: null },
+  fighterName: { type: String, required: true, trim: true },
+  instagramHandle: { type: String, default: '' },
+  imageUrl: { type: String, default: '' },
+  promoSlug: { type: String, required: true, unique: true, lowercase: true, trim: true },
+  fightId: { type: String, default: '' },
+  fightName: { type: String, default: '' },
+  promoCaption: { type: String, default: '' },
+  hashtags: { type: [String], default: [] },
+  active: { type: Boolean, default: true },
+  clicks: { type: Number, default: 0 },
+  signups: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+const FighterAffiliate = mongoose.model('FighterAffiliate', fighterAffiliateSchema);
+
+const affiliateSlug = value => String(value || 'fighter').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'') || 'fighter';
+const cleanInstagram = value => String(value || '').trim().replace(/^@/,'');
+const affiliateCaption = ({fighterName,fightName,instagramHandle,promoUrl,hashtags}) => {
+  const tags=(hashtags||[]).filter(Boolean).map(x=>x.startsWith('#')?x:'#'+x).join(' ');
+  return [
+    instagramHandle ? '@'+cleanInstagram(instagramHandle)+' is LIVE on Fantasy MMADNESS!' : fighterName+' is LIVE on Fantasy MMADNESS!',
+    'Get in the game and make your prediction'+(fightName?' for '+fightName:'')+'.',
+    'Join through my link, make your picks, and compete for cash and prizes.',
+    promoUrl, tags
+  ].filter(Boolean).join('\\n\\n');
+};
+const requireAffiliateAdmin=(req,res,next)=>{
+  const key=process.env.AFFILIATE_ADMIN_KEY;
+  if(!key) return res.status(503).json({message:'Affiliate admin is not configured. Set AFFILIATE_ADMIN_KEY.'});
+  if(req.get('x-affiliate-admin-key')!==key) return res.status(401).json({message:'Unauthorized'});
+  next();
+};
+
+app.post('/api/admin/affiliates', requireAffiliateAdmin, async (req,res)=>{
+  try {
+    const {userId,fighterName,instagramHandle,imageUrl,promoSlug,fightId,fightName,hashtags,active}=req.body;
+    if(!fighterName) return res.status(400).json({message:'fighterName is required'});
+    const slug=affiliateSlug(promoSlug||fighterName);
+    const handle=cleanInstagram(instagramHandle);
+    const tags=Array.isArray(hashtags)&&hashtags.length?hashtags:[fighterName,handle,'FantasyMMADNESS','MMA','FightPrediction'].filter(Boolean);
+    const promoUrl='/affiliate/'+slug;
+    const update={userId:userId||null,fighterName:String(fighterName).trim(),instagramHandle:handle,imageUrl:imageUrl||'',promoSlug:slug,fightId:fightId||'',fightName:fightName||'',hashtags:tags,active:active!==false,updatedAt:new Date()};
+    update.promoCaption=affiliateCaption({fighterName,fightName,instagramHandle:handle,promoUrl,hashtags:tags});
+    const affiliate=await FighterAffiliate.findOneAndUpdate({promoSlug:slug},{$set:update,$setOnInsert:{createdAt:new Date()}},{new:true,upsert:true});
+    res.json({message:'Fighter affiliate ready',affiliate,promoUrl});
+  } catch(error) { console.error('Affiliate create/update error:',error); res.status(500).json({message:'Internal server error'}); }
+});
+
+app.get('/api/admin/affiliates', requireAffiliateAdmin, async (req,res)=>{
+  try { res.json({affiliates:await FighterAffiliate.find({}).sort({createdAt:-1})}); }
+  catch(error) { console.error('Affiliate list error:',error); res.status(500).json({message:'Internal server error'}); }
+});
+
+app.patch('/api/admin/affiliates/:id', requireAffiliateAdmin, async (req,res)=>{
+  try {
+    const allowed={updatedAt:new Date()};
+    ['active','imageUrl','fightId','fightName'].forEach(k=>{if(req.body[k]!==undefined) allowed[k]=req.body[k];});
+    if(req.body.instagramHandle!==undefined) allowed.instagramHandle=cleanInstagram(req.body.instagramHandle);
+    const affiliate=await FighterAffiliate.findByIdAndUpdate(req.params.id,{$set:allowed},{new:true});
+    if(!affiliate) return res.status(404).json({message:'Affiliate not found'});
+    res.json({affiliate});
+  } catch(error) { console.error('Affiliate update error:',error); res.status(500).json({message:'Internal server error'}); }
+});
+
+app.get('/api/affiliate/:slug', async (req,res)=>{
+  try {
+    const affiliate=await FighterAffiliate.findOne({promoSlug:req.params.slug.toLowerCase(),active:true}).select('-__v');
+    if(!affiliate) return res.status(404).json({message:'Affiliate not found'});
+    await FighterAffiliate.updateOne({_id:affiliate._id},{$inc:{clicks:1}});
+    res.json({affiliate:{fighterName:affiliate.fighterName,instagramHandle:affiliate.instagramHandle,imageUrl:affiliate.imageUrl,promoSlug:affiliate.promoSlug,fightId:affiliate.fightId,fightName:affiliate.fightName,promoCaption:affiliate.promoCaption,hashtags:affiliate.hashtags}});
+  } catch(error) { console.error('Affiliate public page error:',error); res.status(500).json({message:'Internal server error'}); }
+});
+
 app.get("/", (req,res) =>{
   res.send("Backend server has started running successfully...");
 });
